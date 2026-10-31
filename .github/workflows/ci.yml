@@ -44,8 +44,9 @@ jobs:
       - name: Run automated tests
         env:
           DATABASE_URL: postgresql+psycopg://trade_app:test_password@localhost:5432/trade_store_test
+          PYTHONPATH: .
         run: |
-          pytest -v --cov=app.main --cov=app.services --cov=app.expiry --cov=app.schemas --cov=app.models --cov=app.database --cov-report=term-missing
+          python -m pytest -v --cov=app.main --cov=app.services --cov=app.expiry --cov=app.schemas --cov=app.models --cov=app.database --cov-report=term-missing
 
       - name: Scan dependencies for vulnerabilities
         run: |
