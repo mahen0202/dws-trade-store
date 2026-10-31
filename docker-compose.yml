@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: dws-trade-postgres
+    environment:
+      POSTGRES_DB: trade_store
+      POSTGRES_USER: trade_app
+      POSTGRES_PASSWORD: local_dev_password_change_me
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - trade_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trade_app -d trade_store"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  trade_data:

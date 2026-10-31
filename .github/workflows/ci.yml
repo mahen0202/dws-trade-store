@@ -1,0 +1,52 @@
+
+name: Trade Store CI Pipeline
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test-and-scan:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: trade_app
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: trade_store_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U trade_app -d trade_store_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pip-audit
+
+      - name: Run automated tests
+        env:
+          DATABASE_URL: postgresql+psycopg://trade_app:test_password@localhost:5432/trade_store_test
+        run: |
+          pytest -v --cov=app.main --cov=app.services --cov=app.expiry --cov=app.schemas --cov=app.models --cov=app.database --cov-report=term-missing
+
+      - name: Scan dependencies for vulnerabilities
+        run: |
+          pip-audit --strict
