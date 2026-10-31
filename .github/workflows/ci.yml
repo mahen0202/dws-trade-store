@@ -48,7 +48,6 @@ jobs:
         run: |
           python -c "from app.database import Base, engine; from app.models import Trade; Base.metadata.create_all(bind=engine)"
 
-
       - name: Run automated tests
         env:
           DATABASE_URL: postgresql+psycopg://trade_app:test_password@localhost:5432/trade_store_test
