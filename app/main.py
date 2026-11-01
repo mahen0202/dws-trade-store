@@ -55,6 +55,7 @@ def create_trade(
     return save_trade(db, trade_data)
 
 
+
 @app.get("/trades/{trade_id}", response_model=TradeResponse)
 def get_trade(
     trade_id: str,
@@ -67,7 +68,18 @@ def get_trade(
     if trade is None:
         raise HTTPException(status_code=404, detail="Trade not found")
 
+    # Check and update expiry immediately when the trade is requested.
+    if trade.maturity_date < date.today() and not trade.expired:
+        trade.expired = True
+        db.commit()
+        db.refresh(trade)
+
+    # Do not return expired trades.
+    if trade.expired:
+        raise HTTPException(status_code=404, detail="Trade has expired")
+
     return trade
+
 
 
 @app.get("/health")
