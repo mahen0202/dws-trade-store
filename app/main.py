@@ -1,9 +1,10 @@
+
 from contextlib import asynccontextmanager
 from datetime import date
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -35,9 +36,7 @@ async def lifespan(app: FastAPI):
     )
 
     scheduler.start()
-
     yield
-
     scheduler.shutdown()
 
 
@@ -55,6 +54,37 @@ def create_trade(
     return save_trade(db, trade_data)
 
 
+# Shared filtering and pagination logic.
+def get_trade_records(
+    db: Session,
+    skip: int,
+    limit: int,
+    include_expired: bool,
+):
+    query = select(Trade)
+
+    if not include_expired:
+        query = query.where(
+            Trade.expired.is_(False),
+            Trade.maturity_date >= date.today(),
+        )
+
+    # Consistent ordering before pagination.
+    query = query.order_by(Trade.trade_id)
+    query = query.offset(skip).limit(limit)
+
+    return db.execute(query).scalars().all()
+
+
+@app.get("/trades", response_model=list[TradeResponse])
+def get_all_trades(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=10, ge=1, le=100),
+    include_expired: bool = Query(default=False),
+    db: Session = Depends(get_db),
+):
+    return get_trade_records(db, skip, limit, include_expired)
+
 
 @app.get("/trades/{trade_id}", response_model=TradeResponse)
 def get_trade(
@@ -68,7 +98,7 @@ def get_trade(
     if trade is None:
         raise HTTPException(status_code=404, detail="Trade not found")
 
-    # Check and update expiry immediately when the trade is requested.
+    # Update expiry immediately when a matured trade is requested.
     if trade.maturity_date < date.today() and not trade.expired:
         trade.expired = True
         db.commit()
@@ -79,7 +109,6 @@ def get_trade(
         raise HTTPException(status_code=404, detail="Trade has expired")
 
     return trade
-
 
 
 @app.get("/health")
