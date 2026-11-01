@@ -1,9 +1,14 @@
 
 import os
 import asyncio
+import importlib
+
 from datetime import date, timedelta
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from unittest.mock import patch, MagicMock
 
+from fastapi import HTTPException
 from dotenv import load_dotenv
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -295,7 +300,18 @@ def test_get_nonexistent_trade():
 def test_database_commit_failure_triggers_rollback():
     db = MagicMock()
 
-    db.execute.return_value.scalar_one_or_none.return_value = None
+    #db.execute.return_value.scalar_one_or_none.return_value = None
+    db.execute.return_value.scalar_one_or_none.return_value = Trade(
+    trade_id="ROLLBACK_TEST",
+    version=1,
+    counterparty_id="CP-TEST",
+    portfolio_id="PF-TEST",
+    maturity_date=date.today() + timedelta(days=30),
+    created_date=date.today(),
+    expired=False,
+    )
+
+
     db.commit.side_effect = SQLAlchemyError(
         "Simulated database failure"
     )
@@ -407,3 +423,187 @@ def test_application_lifespan_starts_and_stops_scheduler():
             mock_scheduler.shutdown.assert_called_once()
 
         asyncio.run(run_lifespan())
+
+
+# --------------------------------------------------
+# Database dependency cleanup test
+# --------------------------------------------------
+
+def test_get_db_closes_session_after_use():
+    from app.database import get_db
+
+    mock_db = MagicMock()
+
+    with patch("app.database.SessionLocal", return_value=mock_db):
+        db_generator = get_db()
+
+        db = next(db_generator)
+        assert db is mock_db
+
+        db_generator.close()
+
+        mock_db.close.assert_called_once()
+
+
+# --------------------------------------------------
+# Concurrent trade creation and update tests
+# --------------------------------------------------
+
+def test_concurrent_creation_of_same_trade_id_creates_one_record():
+    barrier = Barrier(2)
+
+    def create_trade(version):
+        trade_data = TradeCreate(
+            trade_id="CONCURRENT-001",
+            version=version,
+            counterparty_id=f"CP-{version}",
+            portfolio_id=f"PF-{version}",
+            maturity_date=date.today() + timedelta(days=30),
+            created_date=date.today(),
+        )
+
+        with SessionLocal() as db:
+            barrier.wait()
+            return save_trade(db, trade_data)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(create_trade, 1),
+            executor.submit(create_trade, 2),
+        ]
+
+        results = []
+        for future in futures:
+            try:
+                results.append(future.result())
+            except HTTPException as exc:
+                results.append(exc.status_code)
+
+    with SessionLocal() as db:
+        stored = db.query(Trade).filter_by(
+            trade_id="CONCURRENT-001"
+        ).all()
+
+    assert len(stored) == 1
+    assert stored[0].version == 2
+    assert all(
+        isinstance(result, Trade) or result == 409
+        for result in results
+    )
+
+
+def test_concurrent_updates_leave_highest_version():
+    initial_trade = TradeCreate(
+        trade_id="CONCURRENT-002",
+        version=1,
+        counterparty_id="CP-1",
+        portfolio_id="PF-1",
+        maturity_date=date.today() + timedelta(days=30),
+        created_date=date.today(),
+    )
+
+    with SessionLocal() as db:
+        save_trade(db, initial_trade)
+
+    barrier = Barrier(2)
+
+    def update_trade(version):
+        trade_data = TradeCreate(
+            trade_id="CONCURRENT-002",
+            version=version,
+            counterparty_id=f"CP-{version}",
+            portfolio_id=f"PF-{version}",
+            maturity_date=date.today() + timedelta(days=30),
+            created_date=date.today(),
+        )
+
+        with SessionLocal() as db:
+            barrier.wait()
+            return save_trade(db, trade_data)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(update_trade, 2),
+            executor.submit(update_trade, 3),
+        ]
+
+        results = []
+        for future in futures:
+            try:
+                results.append(future.result())
+            except HTTPException as exc:
+                results.append(exc.status_code)
+
+    with SessionLocal() as db:
+        stored = db.get(Trade, "CONCURRENT-002")
+
+    assert stored is not None
+    assert stored.version == 3
+    assert stored.counterparty_id == "CP-3"
+    assert stored.portfolio_id == "PF-3"
+    assert all(
+        isinstance(result, Trade) or result == 409
+        for result in results
+    )
+
+
+def test_concurrent_lower_version_cannot_overwrite_higher_version():
+    initial_trade = TradeCreate(
+        trade_id="CONCURRENT-003",
+        version=3,
+        counterparty_id="CP-3",
+        portfolio_id="PF-3",
+        maturity_date=date.today() + timedelta(days=30),
+        created_date=date.today(),
+    )
+
+    with SessionLocal() as db:
+        save_trade(db, initial_trade)
+
+    barrier = Barrier(2)
+
+    def update_trade(version):
+        trade_data = TradeCreate(
+            trade_id="CONCURRENT-003",
+            version=version,
+            counterparty_id=f"CP-{version}",
+            portfolio_id=f"PF-{version}",
+            maturity_date=date.today() + timedelta(days=30),
+            created_date=date.today(),
+        )
+
+        with SessionLocal() as db:
+            barrier.wait()
+            return save_trade(db, trade_data)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(update_trade, 4),
+            executor.submit(update_trade, 2),
+        ]
+
+        results = []
+        for future in futures:
+            try:
+                results.append(future.result())
+            except HTTPException as exc:
+                results.append(exc.status_code)
+
+    with SessionLocal() as db:
+        stored = db.get(Trade, "CONCURRENT-003")
+
+    assert stored is not None
+    assert stored.version == 4
+    assert stored.counterparty_id == "CP-4"
+    assert stored.portfolio_id == "PF-4"
+    assert 409 in results
+
+def test_database_url_missing_raises_runtime_error(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    with patch("dotenv.load_dotenv"):
+        with pytest.raises(
+            RuntimeError,
+            match="DATABASE_URL environment variable is not configured"
+        ):
+            importlib.reload(importlib.import_module("app.database"))

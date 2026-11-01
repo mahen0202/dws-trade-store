@@ -1,54 +1,140 @@
+# Trade Store REST API
 
-# Deutsche Bank Trade Store REST API
+**A version-controlled trade management service built with Python, FastAPI and PostgreSQL.**
 
-A RESTful Trade Store application built with **Python, FastAPI, SQLAlchemy and PostgreSQL**. The application manages trade records, enforces trade-versioning and maturity-date business rules, and automatically marks matured trades as expired.
+[![CI Pipeline](https://github.com/mahen0202/dws-trade-store/actions/workflows/ci.yml/badge.svg)](https://github.com/mahen0202/dws-trade-store/actions/workflows/ci.yml)
 
-## 1. Technology Stack
+## 1. Overview
 
-- Python 3.13
-- FastAPI
-- SQLAlchemy
-- PostgreSQL 17
-- Pydantic
-- Pytest
-- APScheduler
-- GitHub Actions
-- pip-audit
+The Trade Store REST API provides a backend service for managing financial trade records. It supports trade creation, version-based updates, validation of maturity dates, persistent storage and automated trade-expiry processing.
 
-## 2. Functional Requirements
+The solution is designed around clear separation of API, business logic, data access and scheduled processing responsibilities.
+
+### Key capabilities
+
+- RESTful API implementation using FastAPI.
+- Persistent trade storage using PostgreSQL.
+- Version-aware trade creation and update handling.
+- Business-rule validation for trade maturity dates.
+- Automated expiry processing using APScheduler.
+- Automated regression testing using Pytest.
+- Continuous integration using GitHub Actions.
+- Dependency vulnerability auditing using pip-audit.
+
+## 2. Technology Stack
+
+| Layer | Technology |
+|---|---|
+| Programming language | Python 3.13 |
+| API framework | FastAPI |
+| Data persistence | PostgreSQL 17 |
+| ORM | SQLAlchemy |
+| Request validation | Pydantic |
+| Automated testing | Pytest |
+| API test client | FastAPI TestClient |
+| Scheduled processing | APScheduler |
+| CI/CD | GitHub Actions |
+| Dependency security | pip-audit |
+
+## 3. Solution Architecture
+
+The application follows a layered architecture to separate responsibilities and improve maintainability.
+
+```text
+                  API Consumer
+                       |
+                       v
+              FastAPI REST Layer
+                       |
+                       v
+              Request Validation
+                  (Pydantic)
+                       |
+                       v
+              Business Service Layer
+                (Trade Services)
+                       |
+                       v
+              SQLAlchemy Data Layer
+                       |
+                       v
+                  PostgreSQL
+
+
+              Scheduled Processing
+                       |
+                       v
+                Expiry Service
+                       |
+                       v
+                  PostgreSQL
+```
+
+### Component responsibilities
+
+| Component | Responsibility |
+|---|---|
+| `main.py` | API endpoints and application lifecycle |
+| `schemas.py` | Request and response validation |
+| `services.py` | Trade business rules and persistence operations |
+| `models.py` | Database entity definitions |
+| `database.py` | Database engine and session management |
+| `expiry.py` | Automated maturity-date processing |
+
+## 4. Trade Data Model
 
 Each trade contains the following attributes:
 
-| Field | Description |
+| Attribute | Type | Description |
+|---|---|---|
+| trade_id | String | Unique trade identifier and primary key |
+| version | Integer | Trade version |
+| counterparty_id | String | Counter-party identifier |
+| portfolio_id | String | Portfolio identifier |
+| maturity_date | Date | Trade maturity date |
+| created_date | Date | Trade creation date |
+| expired | Boolean | Indicates whether the trade has expired |
+
+## 5. Business Rules
+
+The service enforces the following business rules:
+
+| Rule | Expected behaviour |
 |---|---|
-| trade_id | Unique trade identifier |
-| version | Trade version |
-| counterparty_id | Counter-party identifier |
-| portfolio_id | Portfolio identifier |
-| maturity_date | Trade maturity date |
-| created_date | Trade creation date |
-| expired | Expiry status |
+| New trade | Create a trade if the identifier does not exist |
+| Lower version | Reject an incoming trade with a lower version |
+| Same version | Replace the existing trade record |
+| Higher version | Replace the existing trade record |
+| Past maturity | Reject a trade whose maturity date is earlier than today |
+| Trade expiry | Mark matured trades as expired |
+| Record retention | Retain expired trades; do not delete them |
 
-### Business Rules
+Trade updates are handled through database transactions to maintain data consistency.
 
-1. A trade with a lower version than the existing stored version is rejected.
-2. A trade with the same version replaces the existing record.
-3. A trade with a higher version replaces the existing record.
-4. Trades with maturity dates earlier than the current date are rejected.
-5. Matured trades are automatically marked as expired.
-6. Expired trades are retained in the database and are not deleted.
+### Concurrency Handling
 
-## 3. REST API Endpoints
+Trade creation and version updates use PostgreSQL atomic UPSERT
+(`INSERT ... ON CONFLICT DO UPDATE`).
 
-| Method | Endpoint | Description |
+The database applies the version condition atomically, preventing
+a lower-version request from overwriting a higher-version record
+during concurrent requests.
+
+Equal versions are permitted to replace existing records.
+
+## 6. REST API Specification
+
+### Available endpoints
+
+| HTTP method | Endpoint | Purpose |
 |---|---|---|
 | POST | `/trades` | Create or update a trade |
-| GET | `/trades/{trade_id}` | Retrieve a trade by ID |
+| GET | `/trades/{trade_id}` | Retrieve a trade |
 | GET | `/health` | Application health check |
 
-### Sample Request
+### Sample request
 
-`POST /trades`
+**POST `/trades`**
 
 ```json
 {
@@ -61,37 +147,117 @@ Each trade contains the following attributes:
 }
 ```
 
-The application validates the request and applies the trade-versioning and maturity-date rules before persisting the trade.
+### Validation and error handling
 
-## 4. Project Structure
+The API uses request validation and HTTP exceptions to communicate invalid requests and business-rule violations.
 
-```text
-dws-trade-store/
-│
-├── app/
-│   ├── __init__.py
-│   ├── main.py
-│   ├── database.py
-│   ├── models.py
-│   ├── schemas.py
-│   ├── services.py
-│   └── expiry.py
-│
-├── tests/
-│   └── test_trades.py
-│
-├── .github/
-│   └── workflows/
-│       └── ci.yml
-│
-├── .env.example
-├── .gitignore
-├── docker-compose.yml
-├── requirements.txt
-└── README.md
+| HTTP status | Scenario |
+|---|---|
+| 400 | Trade maturity date is in the past |
+| 409 | Incoming trade version is lower than the stored version |
+| 422 | Request validation failure |
+
+Interactive API documentation is available through FastAPI Swagger UI at `/docs`.
+
+## 7. Automated Trade Expiry
+
+The application uses APScheduler to identify and update matured trades.
+
+**Scheduling configuration:**
+
+- Execution frequency: Daily.
+- Scheduled time: 00:01.
+- Time zone: Asia/Kolkata.
+- Startup behaviour: An expiry catch-up check runs when the application starts.
+
+The expiry operation updates the `expired` status for matured trades without deleting historical records.
+
+**Deployment consideration:** The current scheduler runs within the application lifecycle and assumes a single application instance. A multi-instance deployment should use a dedicated scheduler or distributed job coordination mechanism.
+
+## 8. Testing Strategy
+
+The project uses Pytest and FastAPI TestClient for automated verification.
+
+The test suite covers:
+
+- Trade creation and retrieval.
+- Trade version validation.
+- Same-version and higher-version updates.
+- Rejection of lower trade versions.
+- Maturity-date validation.
+- Automated expiry behaviour.
+- Application lifecycle and scheduler behaviour.
+- Database error handling.
+
+### Test database isolation
+
+A dedicated PostgreSQL database named `trade_store_test` is used for automated testing.
+
+A safety guard prevents the test suite from executing against the development database.
+
+### Execute tests locally
+
+```powershell
+python -m pytest -v
 ```
 
-## 5. Local Setup
+### Current verification
+
+**Current local verification: 27 automated tests passed with 100% code coverage.**
+
+## 9. Continuous Integration and Security Scanning
+
+GitHub Actions automates the build verification process.
+
+### Pipeline stages
+
+1. Source checkout.
+2. Python environment setup.
+3. Dependency installation.
+4. PostgreSQL test service initialization.
+5. Database schema initialization.
+6. Automated regression testing.
+7. Dependency vulnerability scanning.
+
+### Dependency audit
+
+The pipeline executes:
+
+```bash
+pip-audit --strict
+```
+
+The latest verified pipeline execution reported:
+
+`No known vulnerabilities found.`
+
+This result applies to the dependencies scanned at that execution time; it is not a guarantee that the application is free from all security vulnerabilities.
+
+## 10. Security Scope and Limitations
+
+The current implementation focuses on trade-management functionality and the specified assignment requirements.
+
+The following security capabilities are not currently implemented:
+
+- User authentication.
+- JWT or OAuth2 token validation.
+- Role-based access control.
+- Fine-grained API permissions.
+- User-level audit trails.
+
+Consequently, the current API should be considered an assignment-level implementation, not a production-ready banking service.
+
+### Recommended enterprise enhancements
+
+- OAuth2 / JWT-based authentication.
+- Role-based authorization for trade read and write operations.
+- Secure secret and signing-key management.
+- API rate limiting and abuse protection.
+- Structured security and audit logging.
+- Database migration management using Alembic.
+- Distributed scheduling for multi-instance deployments.
+
+## 11. Local Development Setup
 
 ### Prerequisites
 
@@ -106,9 +272,7 @@ git clone https://github.com/mahen0202/dws-trade-store.git
 cd dws-trade-store
 ```
 
-### Create and activate a virtual environment
-
-Windows PowerShell:
+### Create a virtual environment
 
 ```powershell
 python -m venv .venv
@@ -122,17 +286,17 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### Configure the database
+### Configure database connectivity
 
-Create a PostgreSQL database named `trade_store` and configure the database connection in a local `.env` file.
-
-Example:
+Create a local `.env` file:
 
 ```env
 DATABASE_URL=postgresql+psycopg://trade_app:<your-password>@localhost:5432/trade_store
 ```
 
-Use `.env.example` as the configuration template. Do not commit passwords or other secrets.
+Create the PostgreSQL database and configure the application database user before starting the application.
+
+Use `.env.example` as the configuration reference. Never commit local credentials or environment files.
 
 ### Start the application
 
@@ -140,93 +304,24 @@ Use `.env.example` as the configuration template. Do not commit passwords or oth
 uvicorn app.main:app --reload
 ```
 
-Application URL:
+Application:
 
 `http://127.0.0.1:8000`
 
-Interactive API documentation:
+Swagger UI:
 
 `http://127.0.0.1:8000/docs`
 
-## 6. Automated Testing
+## 12. Repository
 
-The project uses Pytest and FastAPI TestClient for automated testing.
-
-A separate PostgreSQL database named `trade_store_test` is used for tests to prevent test execution from affecting development data.
-
-Configure `.env.test` locally with:
-
-```env
-TEST_DATABASE_URL=postgresql+psycopg://trade_app:<your-test-password>@localhost:5432/trade_store_test
-```
-
-Run the tests:
-
-```powershell
-python -m pytest -v
-```
-
-The test configuration includes a safety guard that prevents automated tests from running against the development database.
-
-**Current CI result:** 22 automated tests passed.
-
-## 7. Trade Expiry Scheduler
-
-The application uses APScheduler to automatically identify and expire matured trades.
-
-- Expiry job is scheduled daily at 00:01 Asia/Kolkata.
-- A catch-up expiry check runs when the application starts.
-- Matured trades are updated using a database operation.
-- Existing trade records are retained.
-
-The current scheduler implementation assumes a single application instance. A multi-instance production deployment should use a dedicated scheduler or distributed job coordination.
-
-## 8. CI/CD and Security
-
-GitHub Actions provides an automated CI pipeline.
-
-The pipeline performs the following steps:
-
-1. Checks out the source code.
-2. Sets up Python 3.13.
-3. Installs application dependencies.
-4. Starts a PostgreSQL 17 test database.
-5. Initializes the database schema.
-6. Runs automated tests with coverage reporting.
-7. Scans dependencies using pip-audit.
-
-The vulnerability scan uses:
-
-```bash
-pip-audit --strict
-```
-
-The pipeline fails if the dependency audit detects vulnerabilities under the configured strict policy.
-
-### Latest verified pipeline result
-
-- Database schema initialization: Passed
-- Automated tests: Passed
-- Dependency vulnerability scan: Passed
-- pip-audit output: No known vulnerabilities found
-
-## 9. Repository
-
-Source code:
-
+**Source code:**  
 https://github.com/mahen0202/dws-trade-store
 
-## 10. Future Enhancements
-
-- Database schema migrations using Alembic.
-- Centralized structured logging and monitoring.
-- Authentication and authorization.
-- Dedicated distributed scheduler for multi-instance deployments.
-- Containerized deployment and cloud infrastructure integration.
+**CI/CD executions:**  
+https://github.com/mahen0202/dws-trade-store/actions
 
 ---
 
-**Project:** Deutsche Bank Trade Store REST API  
-**Language:** Python  
-**Database:** PostgreSQL  
-**Framework:** FastAPI
+**Project:** Trade Store REST API  
+**Implementation:** Python / FastAPI / PostgreSQL  
+**Automation:** Pytest / GitHub Actions / pip-audit
