@@ -58,3 +58,25 @@ jobs:
       - name: Scan dependencies for vulnerabilities
         run: |
           pip-audit --strict
+  
+  deploy-to-ec2:
+    name: Deploy to AWS EC2
+    needs: test-and-scan
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: [self-hosted, linux, x64]
+
+    steps:
+      - name: Deploy application
+        run: |
+          cd /home/ubuntu/dws-trade-store
+          git fetch origin master
+          git reset --hard origin/master
+
+          source .venv/bin/activate
+          pip install -r requirements.txt
+
+          python -c "from app.database import Base, engine; from app.models import Trade; Base.metadata.create_all(bind=engine)"
+
+          sudo systemctl restart trade-store
+          sleep 5
+          curl -fsS http://127.0.0.1/health
