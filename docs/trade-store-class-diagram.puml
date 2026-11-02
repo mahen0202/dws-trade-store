@@ -1,0 +1,80 @@
+
+@startuml Trade_Store_Class_Diagram
+title Trade Store - Application Class Diagram
+
+package "API Layer" {
+    class FastAPIApplication {
+        +create_trade()
+        +get_all_trades()
+        +get_trade()
+        +health_check()
+        +lifespan()
+    }
+
+    class TradeCreate {
+        +trade_id: str
+        +version: int
+        +counterparty_id: str
+        +portfolio_id: str
+        +maturity_date: date
+        +created_date: date
+    }
+
+    class TradeResponse {
+        +trade_id: str
+        +version: int
+        +counterparty_id: str
+        +portfolio_id: str
+        +maturity_date: date
+        +created_date: date
+        +expired: bool
+    }
+}
+
+package "Business Layer" {
+    class TradeService {
+        +save_trade(db, trade_data)
+    }
+
+    class ExpiryService {
+        +expire_matured_trades()
+    }
+}
+
+package "Persistence Layer" {
+    class Trade {
+        +trade_id: str
+        +version: int
+        +counterparty_id: str
+        +portfolio_id: str
+        +maturity_date: date
+        +created_date: date
+        +expired: bool
+    }
+
+    class Database {
+        +engine
+        +SessionLocal
+        +get_db()
+    }
+
+    database PostgreSQL
+}
+
+class BackgroundScheduler {
+    +start()
+    +shutdown()
+    +add_job()
+}
+
+FastAPIApplication ..> TradeCreate : validates
+FastAPIApplication ..> TradeResponse : returns
+FastAPIApplication --> TradeService : invokes
+FastAPIApplication --> ExpiryService : application lifecycle
+TradeService --> Trade : creates / updates
+TradeService --> Database : uses session
+ExpiryService --> Database : uses session
+Database --> PostgreSQL : persists
+BackgroundScheduler --> ExpiryService : schedules daily
+
+@enduml

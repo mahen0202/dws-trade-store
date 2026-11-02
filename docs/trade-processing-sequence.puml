@@ -1,0 +1,34 @@
+
+@startuml Trade_Processing_Sequence
+title Trade Store - Trade Processing Sequence
+
+autonumber
+
+actor "API Consumer" as Client
+participant "FastAPI\nmain.py" as API
+participant "Pydantic\nschemas.py" as Schema
+participant "Trade Service\nservices.py" as Service
+database "PostgreSQL" as DB
+
+Client -> API: POST /trades\nTrade request
+API -> Schema: Validate request fields
+Schema --> API: Validated TradeCreate
+
+API -> Service: save_trade(db, trade_data)
+Service -> DB: Atomic INSERT / UPSERT\nwith version condition
+
+alt New trade
+    DB --> Service: Insert successful
+    Service --> API: Saved trade
+    API --> Client: 201 Created
+else Same or higher version
+    DB --> Service: Existing trade replaced
+    Service --> API: Updated trade
+    API --> Client: 201 Created
+else Lower version
+    DB --> Service: Version condition not satisfied
+    Service --> API: Reject lower version
+    API --> Client: 409 Conflict
+end
+
+@enduml
