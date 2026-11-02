@@ -25,9 +25,9 @@ The solution is designed around clear separation of API, business logic, data ac
 
 | Layer | Technology |
 |---|---|
-| Programming language | Python 3.13 |
+| Programming language | Python 3.12 (CI/AWS); Python 3.13 (local) |
 | API framework | FastAPI |
-| Data persistence | PostgreSQL 17 |
+| Data persistence | PostgreSQL 16 (CI/AWS); PostgreSQL 17 (local) |
 | ORM | SQLAlchemy |
 | Request validation | Pydantic |
 | Automated testing | Pytest |
@@ -69,6 +69,21 @@ The application follows a layered architecture to separate responsibilities and 
                        v
                   PostgreSQL
 ```
+
+
+## Architecture Diagrams
+
+The `docs/` directory contains PlantUML diagrams illustrating the
+application design and trade-processing workflow.
+
+| Diagram | Description |
+|---|---|
+| [Trade Processing Sequence](docs/trade-processing-sequence.puml) | Shows request validation, version checks and database persistence. |
+| [Trade Store Class Diagram](docs/trade-store-class-diagram.puml) | Shows the application components and their relationships. |
+
+The diagrams can be rendered using PlantUML.
+
+
 
 ### Component responsibilities
 
@@ -129,8 +144,22 @@ Equal versions are permitted to replace existing records.
 | HTTP method | Endpoint | Purpose |
 |---|---|---|
 | POST | `/trades` | Create or update a trade |
-| GET | `/trades/{trade_id}` | Retrieve a trade |
+| GET | `/trades` | Retrieve trades with pagination and expiry filtering |
+| GET | `/trades/{trade_id}` | Retrieve an active trade |
 | GET | `/health` | Application health check |
+
+### Trade retrieval parameters
+
+The `GET /trades` endpoint supports:
+
+- `skip`: Number of records to skip (default: 0).
+- `limit`: Maximum records to return (default: 10, maximum: 100).
+- `include_expired`: Include expired trades when true (default: false).
+
+Example:
+
+`GET /trades?skip=0&limit=10&include_expired=true`
+
 
 ### Sample request
 
@@ -201,9 +230,13 @@ A safety guard prevents the test suite from executing against the development da
 python -m pytest -v
 ```
 
+
 ### Current verification
 
-**Current local verification: 27 automated tests passed with 100% code coverage.**
+- Automated tests: 35 passed.
+- Overall statement coverage: 100%.
+- Application modules: all six modules at 100% coverage.
+- Uncovered statements: 0
 
 ## 9. Continuous Integration and Security Scanning
 
@@ -261,9 +294,9 @@ Consequently, the current API should be considered an assignment-level implement
 
 ### Prerequisites
 
-- Python 3.13
-- PostgreSQL 17
-- Git
+- Python 3.12 or later (Python 3.12 used in CI/AWS).
+- PostgreSQL 16 or later.
+- Git.
 
 ### Clone the repository
 

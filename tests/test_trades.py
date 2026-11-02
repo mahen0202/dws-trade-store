@@ -607,3 +607,167 @@ def test_database_url_missing_raises_runtime_error(monkeypatch):
             match="DATABASE_URL environment variable is not configured"
         ):
             importlib.reload(importlib.import_module("app.database"))
+
+
+# --------------------------------------------------
+# GET all trades: filtering and pagination
+# --------------------------------------------------
+
+def test_get_all_trades_returns_active_trades():
+    client.post("/trades", json=sample_trade(trade_id="GET-001"))
+    client.post("/trades", json=sample_trade(trade_id="GET-002"))
+
+    response = client.get("/trades")
+
+    assert response.status_code == 200
+    assert len(response.json()) == 2
+    assert all(trade["expired"] is False for trade in response.json())
+
+
+def test_get_all_trades_returns_empty_list():
+    response = client.get("/trades")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_get_all_trades_includes_expired_trades():
+    db = SessionLocal()
+
+    try:
+        expired_trade = Trade(
+            trade_id="GET-EXPIRED",
+            version=1,
+            counterparty_id="CP-1",
+            portfolio_id="PF-1",
+            maturity_date=date.today() - timedelta(days=1),
+            created_date=date.today() - timedelta(days=10),
+            expired=True,
+        )
+
+        db.add(expired_trade)
+        db.commit()
+    finally:
+        db.close()
+
+    client.post("/trades", json=sample_trade(trade_id="GET-ACTIVE"))
+
+    response = client.get("/trades?include_expired=true")
+
+    assert response.status_code == 200
+
+    records = response.json()
+
+    assert len(records) == 2
+    assert any(trade["expired"] is True for trade in records)
+    assert any(trade["expired"] is False for trade in records)
+
+
+def test_get_all_trades_excludes_expired_trades():
+    db = SessionLocal()
+
+    try:
+        expired_trade = Trade(
+            trade_id="GET-EXPIRED",
+            version=1,
+            counterparty_id="CP-1",
+            portfolio_id="PF-1",
+            maturity_date=date.today() - timedelta(days=1),
+            created_date=date.today() - timedelta(days=10),
+            expired=True,
+        )
+
+        db.add(expired_trade)
+        db.commit()
+    finally:
+        db.close()
+
+    client.post("/trades", json=sample_trade(trade_id="GET-ACTIVE"))
+
+    response = client.get("/trades?include_expired=false")
+
+    assert response.status_code == 200
+
+    records = response.json()
+
+    assert len(records) == 1
+    assert records[0]["trade_id"] == "GET-ACTIVE"
+
+
+def test_get_all_trades_pagination():
+    for trade_id in ["PAGE-001", "PAGE-002", "PAGE-003"]:
+        client.post("/trades", json=sample_trade(trade_id=trade_id))
+
+    response = client.get("/trades?skip=1&limit=1")
+
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+    assert response.json()[0]["trade_id"] == "PAGE-002"
+
+
+def test_get_all_trades_rejects_invalid_pagination():
+    response = client.get("/trades?skip=-1")
+
+    assert response.status_code == 422
+
+    response = client.get("/trades?limit=101")
+
+    assert response.status_code == 422
+
+
+# --------------------------------------------------
+# GET trade: expiry handling
+# --------------------------------------------------
+
+def test_get_matured_trade_marks_it_expired_and_returns_404():
+    db = SessionLocal()
+
+    try:
+        matured_trade = Trade(
+            trade_id="GET-MATURED",
+            version=1,
+            counterparty_id="CP-1",
+            portfolio_id="PF-1",
+            maturity_date=date.today() - timedelta(days=1),
+            created_date=date.today() - timedelta(days=10),
+            expired=False,
+        )
+
+        db.add(matured_trade)
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get("/trades/GET-MATURED")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Trade has expired"
+
+    with SessionLocal() as db:
+        stored_trade = db.get(Trade, "GET-MATURED")
+        assert stored_trade.expired is True
+
+
+def test_get_already_expired_trade_returns_404():
+    db = SessionLocal()
+
+    try:
+        expired_trade = Trade(
+            trade_id="GET-ALREADY-EXPIRED",
+            version=1,
+            counterparty_id="CP-1",
+            portfolio_id="PF-1",
+            maturity_date=date.today() - timedelta(days=1),
+            created_date=date.today() - timedelta(days=10),
+            expired=True,
+        )
+
+        db.add(expired_trade)
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get("/trades/GET-ALREADY-EXPIRED")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Trade has expired"
