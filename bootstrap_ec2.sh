@@ -114,7 +114,7 @@ cat > /etc/nginx/sites-available/trade-store <<EOF
 server {
     listen 80;
     server_name ${PUBLIC_IP};
-    return 301 https://\\$host\\$request_uri;
+    return 301 https://\$host\$request_uri;
 }
 
 server {
