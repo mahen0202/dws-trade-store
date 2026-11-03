@@ -33,6 +33,12 @@ apt-get install -y \
   postgresql postgresql-contrib nginx openssl \
   python3.12 python3.12-venv python3-pip
 
+PUBLIC_IP="${PUBLIC_IP:-}"
+if [[ -z "$PUBLIC_IP" ]]; then
+  PUBLIC_IP="$(curl -4fsS --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]' || true)"
+fi
+[[ "$PUBLIC_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || die "Could not determine public IPv4. Re-run with: sudo PUBLIC_IP=x.x.x.x bash bootstrap_ec2.sh"
+
 log "Preparing application source"
 if [[ -d "$APP_DIR/.git" ]]; then
   sudo -u "$APP_USER" git -C "$APP_DIR" fetch origin
@@ -127,10 +133,10 @@ server {
 
     location / {
         proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host \\$host;
-        proxy_set_header X-Real-IP \\$remote_addr;
-        proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \\$scheme;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
 EOF
