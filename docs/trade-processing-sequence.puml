@@ -1,34 +1,100 @@
-
-@startuml Trade_Processing_Sequence
-title Trade Store - Trade Processing Sequence
+﻿@startuml Trade_Processing_Sequence
+title Trade Store - REST and Kafka Trade Processing
 
 autonumber
 
 actor "API Consumer" as Client
 participant "FastAPI\nmain.py" as API
-participant "Pydantic\nschemas.py" as Schema
-participant "Trade Service\nservices.py" as Service
+participant "Pydantic\nTradeCreate" as Schema
+participant "Trade Service\nsave_trade()" as Service
 database "PostgreSQL" as DB
+participant "Kafka Producer" as Producer
+queue "Kafka\ntrades.incoming" as Kafka
+participant "Kafka Consumer" as Consumer
+queue "Kafka DLQ\ntrades.rejected" as DLQ
 
-Client -> API: POST /trades\nTrade request
-API -> Schema: Validate request fields
-Schema --> API: Validated TradeCreate
+alt Synchronous REST ingestion
+    Client -> API: POST /trades
+    API -> Schema: Validate request
+    Schema --> API: Valid TradeCreate
 
-API -> Service: save_trade(db, trade_data)
-Service -> DB: Atomic INSERT / UPSERT\nwith version condition
+    API -> Service: save_trade(db, trade)
+    Service -> DB: Atomic UPSERT\nVersion <= incoming version
 
-alt New trade
-    DB --> Service: Insert successful
-    Service --> API: Saved trade
-    API --> Client: 201 Created
-else Same or higher version
-    DB --> Service: Existing trade replaced
-    Service --> API: Updated trade
-    API --> Client: 201 Created
-else Lower version
-    DB --> Service: Version condition not satisfied
-    Service --> API: Reject lower version
-    API --> Client: 409 Conflict
+    alt New / same / higher version
+        DB --> Service: Saved trade
+        Service --> API: Trade response
+        API --> Client: 201 Created
+    else Lower version
+        DB --> Service: No row returned
+        Service --> API: HTTP 409
+        API --> Client: 409 Conflict
+    end
+
+else Asynchronous Kafka ingestion
+    Client -> API: POST /trades/kafka
+
+    alt Kafka disabled
+        API --> Client: 503 Service Unavailable
+    else Kafka enabled
+        API -> Schema: Validate request
+        Schema --> API: Valid TradeCreate
+
+        API -> Producer: publish_trade(trade)
+        Producer -> Kafka: Produce keyed by trade_id\nacks=all, idempotence enabled
+
+        alt Kafka delivery acknowledged
+            Kafka --> Producer: Delivery callback\npartition + offset
+            Producer --> API: ACCEPTED
+            API --> Client: 202 Accepted
+        else Delivery failure / timeout
+            Producer --> API: RuntimeError
+            API --> Client: 503 Service Unavailable
+        end
+    end
+end
+
+== Asynchronous Kafka Consumer ==
+
+Kafka -> Consumer: Poll message
+
+Consumer -> Schema: Validate JSON and TradeCreate
+
+alt Invalid payload / business-rule rejection
+    opt Business-rule validation
+        Consumer -> Service: save_trade(db, trade)
+        Service --> Consumer: HTTP 400 / 409
+    end
+    Consumer -> DLQ: Publish rejection with metadata
+
+    alt DLQ delivery confirmed
+        DLQ --> Consumer: Delivery acknowledgment
+        Consumer -> Kafka: Commit offset synchronously
+    else DLQ delivery failure
+        Consumer -> Kafka: Seek failed offset
+        note right of Consumer
+          Retry after 3 seconds.
+          Offset not committed.
+        end note
+    end
+
+else Valid trade
+    Consumer -> Service: save_trade(db, trade)
+    Service -> DB: Atomic UPSERT
+
+    alt Database save successful
+        DB --> Service: Saved trade
+        Service --> Consumer: Success
+        Consumer -> Kafka: Commit offset synchronously
+    else Database / transient processing failure
+        DB --> Service: Error
+        Service --> Consumer: Exception
+        Consumer -> Kafka: Seek failed offset
+        note right of Consumer
+          Retry after 3 seconds.
+          Offset not committed.
+        end note
+    end
 end
 
 @enduml

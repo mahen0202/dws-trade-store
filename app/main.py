@@ -14,6 +14,8 @@ from app.schemas import TradeCreate, TradeResponse
 from app.services import save_trade
 from app.expiry import expire_matured_trades
 
+from app.kafka.router import router as kafka_router
+
 
 scheduler = BackgroundScheduler(timezone=ZoneInfo("Asia/Kolkata"))
 
@@ -39,12 +41,12 @@ async def lifespan(app: FastAPI):
     yield
     scheduler.shutdown()
 
-
 app = FastAPI(
     title="Deutsche Bank Trade Store",
     lifespan=lifespan,
 )
 
+app.include_router(kafka_router)
 
 @app.post("/trades", response_model=TradeResponse, status_code=201)
 def create_trade(

@@ -1,6 +1,8 @@
+﻿@startuml Trade_Store_Class_Diagram
+title Trade Store - Application Component and Class Diagram
 
-@startuml Trade_Store_Class_Diagram
-title Trade Store - Application Class Diagram
+skinparam packageStyle rectangle
+skinparam linetype ortho
 
 package "API Layer" {
     class FastAPIApplication {
@@ -9,6 +11,10 @@ package "API Layer" {
         +get_trade()
         +health_check()
         +lifespan()
+    }
+
+    class KafkaRouter {
+        +create_trade_via_kafka(trade_data)
     }
 
     class TradeCreate {
@@ -41,6 +47,29 @@ package "Business Layer" {
     }
 }
 
+package "Kafka Ingestion Layer" {
+    class KafkaProducer {
+        +get_producer()
+        +publish_trade(trade)
+        +start_producer_polling()
+        +stop_producer_polling()
+    }
+
+    class KafkaConsumer {
+        +run_consumer()
+        +process_message(message)
+        +publish_rejection(message, error)
+        +stop_consumer(signum, frame)
+    }
+
+    class ConsumerLauncher {
+        +main()
+    }
+
+    queue "trades.incoming" as IncomingTopic
+    queue "trades.rejected" as DLQ
+}
+
 package "Persistence Layer" {
     class Trade {
         +trade_id: str
@@ -69,12 +98,46 @@ class BackgroundScheduler {
 
 FastAPIApplication ..> TradeCreate : validates
 FastAPIApplication ..> TradeResponse : returns
-FastAPIApplication --> TradeService : invokes
-FastAPIApplication --> ExpiryService : application lifecycle
+FastAPIApplication --> TradeService : REST ingestion
+FastAPIApplication --> KafkaRouter : includes router
+FastAPIApplication --> ExpiryService : startup catch-up
+
+KafkaRouter ..> TradeCreate : validates
+KafkaRouter --> KafkaProducer : publishes
+KafkaProducer --> IncomingTopic : produces
+IncomingTopic --> KafkaConsumer : consumes
+ConsumerLauncher --> KafkaConsumer : starts 1-6 processes
+
+KafkaConsumer --> TradeService : saves valid trades
+KafkaConsumer --> DLQ : publishes rejections
+
 TradeService --> Trade : creates / updates
 TradeService --> Database : uses session
+KafkaConsumer --> Database : opens session
 ExpiryService --> Database : uses session
 Database --> PostgreSQL : persists
-BackgroundScheduler --> ExpiryService : schedules daily
+
+BackgroundScheduler --> ExpiryService : daily 00:01 IST
+
+note right of KafkaProducer
+  Shared producer instance
+  Background polling thread
+  Delivery acknowledgment
+  acks=all
+  Idempotence enabled
+end note
+
+note right of KafkaConsumer
+  Consumer group:
+  trade-store-consumers
+
+  Manual offset commits
+  Retry on database failure
+  DLQ for invalid trades
+end note
+
+note bottom of IncomingTopic
+  6 partitions in local setup
+end note
 
 @enduml

@@ -203,40 +203,64 @@ The expiry operation updates the `expired` status for matured trades without del
 
 **Deployment consideration:** The current scheduler runs within the application lifecycle and assumes a single application instance. A multi-instance deployment should use a dedicated scheduler or distributed job coordination mechanism.
 
-## 8. Testing Strategy
+## 8. Testing Strategy and TDD
 
-The project uses Pytest and FastAPI TestClient for automated verification.
+The project uses Pytest and FastAPI TestClient to validate trade-processing functionality. Tests cover API behavior, business rules, persistence, scheduled expiry, and optional Kafka ingestion.
 
-The test suite covers:
+### Test Coverage
+
+The automated test suite verifies:
 
 - Trade creation and retrieval.
-- Trade version validation.
 - Same-version and higher-version updates.
 - Rejection of lower trade versions.
-- Maturity-date validation.
-- Automated expiry behaviour.
-- Application lifecycle and scheduler behaviour.
+- Rejection of past-maturity trades.
+- Atomic PostgreSQL UPSERT behavior.
+- Automated trade-expiry processing.
+- Application lifecycle and scheduler behavior.
 - Database error handling.
+- Kafka producer delivery acknowledgment, failures and timeouts.
+- Kafka API feature-flag behavior.
+- Kafka consumer processing, retry and offset commits.
+- Dead-letter queue publishing for rejected trades.
+- Kafka consumer launcher behavior.
 
-### Test database isolation
+### TDD-Oriented Development
 
-A dedicated PostgreSQL database named `trade_store_test` is used for automated testing.
+The implementation is organized around independently testable business rules and automated regression tests.
 
-A safety guard prevents the test suite from executing against the development database.
+The tests provide executable specifications for expected behavior, including successful trade updates and rejection scenarios.
 
-### Execute tests locally
+The repository demonstrates automated testing and regression verification. Historical test-first development would require supporting commit history or other evidence.
+
+### Test Database Isolation
+
+Automated tests use a dedicated PostgreSQL database named `trade_store_test`.
+
+A safety guard prevents the test suite from running against the development database.
+
+### Run Automated Tests
 
 ```powershell
-python -m pytest -v
+python -m pytest -q --cov=app --cov-report=term-missing
 ```
 
+### Latest Local Verification
 
-### Current verification
+| Metric | Result |
+|---|---|
+| Tests executed | 61 |
+| Tests passed | 61 |
+| Tests failed | 0 |
+| Overall statement coverage | 96% |
+| Statements analyzed | 309 |
+| Uncovered statements | 11 |
+| Python version | 3.13.14 |
+| Execution environment | Windows |
 
-- Automated tests: 35 passed.
-- Overall statement coverage: 100%.
-- Application modules: all six modules at 100% coverage.
-- Uncovered statements: 0
+All REST API business-rule modules achieved 100% statement coverage. Kafka producer coverage was 83%, Kafka consumer coverage was 99%, and Kafka launcher coverage was 96%.
+
+These measurements reflect the latest local test execution and may differ from CI results.
 
 ## 9. Continuous Integration and Security Scanning
 
@@ -252,6 +276,19 @@ GitHub Actions automates the build verification process.
 6. Automated regression testing.
 7. Dependency vulnerability scanning.
 
+### Automated AWS EC2 Deployment
+
+The GitHub Actions workflow contains two dependent jobs:
+
+1. **test-and-scan:** Installs dependencies, initializes PostgreSQL, executes automated regression tests, and performs dependency vulnerability scanning using `pip-audit`.
+2. **deploy-to-ec2:** Runs after successful completion of `test-and-scan`, for pushes to the `master` branch. The self-hosted runner updates the application source, installs dependencies, initializes the database schema, restarts the `trade-store` systemd service, and verifies the `/health` endpoint.
+
+The latest reported GitHub Actions execution completed both jobs successfully.
+
+The optional Kafka implementation is maintained separately on `feature/kafka-ingestion` and should not be described as deployed to EC2 until merged and deployed.
+
+**Security note:** `pip-audit --strict` is not a critical-severity-only threshold. The pipeline fails on reported vulnerabilities under the tool's normal exit behavior; `--strict` additionally treats certain audit warnings as failures.
+
 ### Dependency audit
 
 The pipeline executes:
@@ -265,6 +302,7 @@ The latest verified pipeline execution reported:
 `No known vulnerabilities found.`
 
 This result applies to the dependencies scanned at that execution time; it is not a guarantee that the application is free from all security vulnerabilities.
+
 
 ## 10. Security Scope and Limitations
 
@@ -358,3 +396,96 @@ https://github.com/mahen0202/dws-trade-store/actions
 **Project:** Trade Store REST API  
 **Implementation:** Python / FastAPI / PostgreSQL  
 **Automation:** Pytest / GitHub Actions / pip-audit
+
+
+## Optional Kafka-Based Trade Ingestion
+
+Kafka ingestion is an optional enhancement developed on the
+`feature/kafka-ingestion` branch. The original REST API remains available.
+
+### Architecture
+
+```text
+POST /trades/kafka
+        |
+        v
+FastAPI + Kafka Producer
+        |
+        v
+Kafka: trades.incoming (6 partitions)
+        |
+        v
+Consumer group: trade-store-consumers
+(up to 6 consumer processes)
+        |
+        +---- Valid trade ----> PostgreSQL atomic UPSERT
+        |
+        +---- Invalid trade --> trades.rejected (DLQ)
+        |
+        v
+Commit Kafka offset after successful processing
+```
+
+### Configuration
+
+| Variable | Default |
+|---|---|
+| `KAFKA_ENABLED` | `false` |
+| `KAFKA_BOOTSTRAP_SERVERS` | `127.0.0.1:9092` |
+| `KAFKA_TOPIC` | `trades.incoming` |
+| `KAFKA_DLQ_TOPIC` | `trades.rejected` |
+| `KAFKA_CONSUMER_COUNT` | `1` (maximum 6) |
+
+### Start Kafka Locally
+
+Install the optional dependency:
+
+```powershell
+pip install -r requirements-kafka.txt
+```
+
+Start Kafka:
+
+```powershell
+docker compose up -d kafka
+```
+
+Create both topics (automatic topic creation is disabled):
+
+```powershell
+docker exec dws-trade-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic trades.incoming --partitions 6 --replication-factor 1
+
+docker exec dws-trade-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic trades.rejected --partitions 6 --replication-factor 1
+```
+
+Start FastAPI in one terminal:
+
+```powershell
+$env:KAFKA_ENABLED="true"
+uvicorn app.main:app --reload
+```
+
+Start six consumers in another terminal:
+
+```powershell
+$env:KAFKA_CONSUMER_COUNT="6"
+python -m app.kafka.launcher
+```
+
+### Kafka API
+
+`POST /trades/kafka` accepts the same trade payload as `POST /trades`.
+
+- **202 Accepted:** Kafka acknowledged the message. PostgreSQL persistence occurs asynchronously.
+- **503 Service Unavailable:** Kafka ingestion is disabled or publishing failed.
+- **422 Unprocessable Entity:** Request validation failed.
+
+The producer uses `acks=all`, idempotence, and delivery callbacks.
+
+Consumers manually commit offsets after successful database persistence
+or confirmed DLQ delivery. Database and DLQ delivery failures are retried
+without committing the failed offset.
+
+The design provides at-least-once processing, not end-to-end exactly-once
+execution. The single-node Kafka broker uses PLAINTEXT and is intended
+for local development and testing.
