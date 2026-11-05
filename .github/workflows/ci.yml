@@ -82,3 +82,34 @@ jobs:
           sudo systemctl restart trade-store
           sleep 5
           curl -fsS http://127.0.0.1/health
+
+
+  deploy-kafka-to-ec2:
+    name: Deploy Kafka Branch to Backup EC2
+    needs: test-and-scan
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/kafka-ingestion'
+    runs-on: [self-hosted, linux, x64, dws-kafka-backup]
+
+    steps:
+      - name: Deploy Kafka application
+        run: |
+          set -e
+
+          cd /home/ubuntu/dws-trade-store
+
+          git fetch origin feature/kafka-ingestion
+          git reset --hard origin/feature/kafka-ingestion
+
+          .venv/bin/pip install -r requirements.txt
+          .venv/bin/pip install -r requirements-kafka.txt
+
+          .venv/bin/python -c "from app.database import Base, engine; from app.models import Trade; Base.metadata.create_all(bind=engine)"
+
+          sudo systemctl restart trade-store
+          sudo systemctl restart trade-store-consumer
+
+          sleep 5
+          curl -fsS http://127.0.0.1:8000/health
+
+          sudo systemctl is-active trade-store-consumer
+          sudo docker inspect -f '{{.State.Running}}' dws-trade-kafka
