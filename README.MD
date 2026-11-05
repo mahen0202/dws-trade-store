@@ -278,14 +278,64 @@ GitHub Actions automates the build verification process.
 
 ### Automated AWS EC2 Deployment
 
-The GitHub Actions workflow contains two dependent jobs:
+The GitHub Actions workflow performs automated regression testing and dependency vulnerability scanning before deploying the application to AWS EC2.
 
-1. **test-and-scan:** Installs dependencies, initializes PostgreSQL, executes automated regression tests, and performs dependency vulnerability scanning using `pip-audit`.
-2. **deploy-to-ec2:** Runs after successful completion of `test-and-scan`, for pushes to the `master` branch. The self-hosted runner updates the application source, installs dependencies, initializes the database schema, restarts the `trade-store` systemd service, and verifies the `/health` endpoint.
+The pipeline contains three jobs:
 
-The latest reported GitHub Actions execution completed both jobs successfully.
+1. **test-and-scan:** Runs on GitHub-hosted Ubuntu. Installs dependencies, initializes a PostgreSQL test database, executes automated tests, and performs dependency vulnerability scanning using `pip-audit --strict`.
+2. **deploy-to-ec2:** Runs on successful pushes to `master`, after `test-and-scan` passes. Uses a self-hosted GitHub Actions runner to deploy the original REST API implementation.
+3. **deploy-kafka-to-ec2:** Runs on successful pushes to `feature/kafka-ingestion`, after `test-and-scan` passes. Uses the dedicated `dws-kafka-backup` self-hosted runner to deploy the Kafka-enabled application to a separate AWS EC2 instance.
 
-The optional Kafka implementation is maintained separately on `feature/kafka-ingestion` and should not be described as deployed to EC2 until merged and deployed.
+The Kafka deployment performs the following operations:
+
+- Fetches the latest Kafka branch from GitHub.
+- Resets the EC2 working copy to the fetched commit using `git reset --hard FETCH_HEAD`.
+- Installs Python application and Kafka dependencies.
+- Initializes the database schema if required.
+- Restarts the FastAPI and Kafka consumer systemd services.
+- Verifies FastAPI health, Kafka consumer activity, and Kafka container status.
+
+#### Verified AWS Deployment
+
+The Kafka implementation was successfully deployed to an Ubuntu EC2 instance in the AWS Sydney region.
+
+The deployment was verified at Git commit `3226bce` (`Fix Kafka EC2 deployment to use fetched commit`).
+
+The following checks passed:
+
+| Verification | Result |
+|---|---|
+| GitHub Actions deployment | Successful |
+| Deployed Git commit | `3226bce` |
+| FastAPI `/health` | HTTP 200 |
+| Kafka broker | Running |
+| Kafka consumer | Active |
+| Kafka message ingestion | Successful |
+| PostgreSQL persistence | Successful |
+| REST API trade retrieval | HTTP 200 |
+
+#### End-to-End Kafka Verification
+
+A test trade with identifier `DWS-CICD-001` was published directly to the Kafka topic `trades.incoming`.
+
+The Kafka consumer processed the message and persisted the trade in PostgreSQL.
+
+The following REST API request was then executed:
+
+```bash
+curl -i http://127.0.0.1:8000/trades/DWS-CICD-001
+```
+
+The API returned HTTP 200 with the persisted trade, version `1`, and `expired: false`.
+
+This verified the complete processing flow:
+
+`Kafka Producer → Kafka Broker → Kafka Consumer → PostgreSQL → FastAPI REST API`
+
+The implementation uses a single-node Kafka broker for development and demonstration purposes. It is not a production-grade highly available Kafka cluster.
+
+
+
 
 **Security note:** `pip-audit --strict` is not a critical-severity-only threshold. The pipeline fails on reported vulnerabilities under the tool's normal exit behavior; `--strict` additionally treats certain audit warnings as failures.
 
