@@ -98,7 +98,8 @@ jobs:
           cd /home/ubuntu/dws-trade-store
 
           git fetch origin feature/kafka-ingestion
-          git reset --hard origin/feature/kafka-ingestion
+          git reset --hard FETCH_HEAD
+          git rev-parse --short HEAD
 
           .venv/bin/pip install -r requirements.txt
           .venv/bin/pip install -r requirements-kafka.txt
