@@ -373,7 +373,7 @@ Authorized users can access it through SSH port forwarding:
 
 ```bash
 
-ssh -i /path/to/authorized-key.pem -L 8000:127.0.0.1:8000 ubuntu@EC2\_PUBLIC\_IP
+ssh -i /path/to/authorized-key.pem -L 8000:127.0.0.1:8000 ubuntu@15.135.206.84
 
 ```
 
@@ -391,7 +391,7 @@ The SSH private key is not included in the repository. Contact the project owner
 
 
 
-The EC2 public IP may change after Stop/Start.
+The EC2 instance uses Elastic IP 15.135.206.84, which remains stable across reboot and Stop/Start while associated.
 
 
 
